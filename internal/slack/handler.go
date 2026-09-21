@@ -139,7 +139,7 @@ func (h *EventHandler) handleInteraction(w http.ResponseWriter, r *http.Request,
 }
 
 func (h *EventHandler) handleViewSubmission(w http.ResponseWriter, ic goslack.InteractionCallback) {
-	switch ic.CallbackID {
+	switch ic.View.CallbackID {
 	case anonPostViewCallbackID:
 		h.handleAnonPostSubmit(w, ic)
 	case replyAnonViewCallbackID:
