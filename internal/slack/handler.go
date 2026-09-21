@@ -239,7 +239,7 @@ func (h *EventHandler) handleAnonPostSubmit(w http.ResponseWriter, ic goslack.In
 		}
 	}
 
-	respondView(w, goslack.NewPushViewSubmissionResponse(h.confirmationView(conf.ID, secret)))
+	respondView(w, goslack.NewUpdateViewSubmissionResponse(h.confirmationView(conf.ID, secret)))
 }
 
 func (h *EventHandler) acceptConfession(w http.ResponseWriter, ic goslack.InteractionCallback, id int64) {
@@ -251,7 +251,7 @@ func (h *EventHandler) acceptConfession(w http.ResponseWriter, ic goslack.Intera
 		return
 	}
 
-	ts, _, err := h.client.PostMessage(conf.PostChannel, goslack.MsgOptionBlocks(h.postBlocks(conf.ID, conf.Text)...))
+	ts, _, err := h.client.PostMessage(conf.PostChannel, goslack.MsgOptionText(conf.Text, false))
 	if err != nil {
 		log.Printf("posting accepted confession %d: %v", id, err)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -317,7 +317,7 @@ func (h *EventHandler) handleAnonReplySubmit(w http.ResponseWriter, ic goslack.I
 		}))
 		return
 	}
-	if conf.PostChannel != ic.Channel.ID || conf.PostTs.String != ic.MessageTs {
+	if ic.View.PrivateMetadata != fmt.Sprintf("%s:%s", conf.PostChannel, conf.PostTs.String) {
 		respondView(w, goslack.NewErrorsViewSubmissionResponse(map[string]string{
 			replyAnonKeyActionID: "that key doesn't belong to this post message",
 		}))
@@ -407,7 +407,7 @@ func (h *EventHandler) confirmationView(id int64, secret string) *goslack.ModalV
 		CallbackID: anonPostConfirmCallback,
 		Blocks: goslack.Blocks{BlockSet: []goslack.Block{
 			goslack.NewSectionBlock(
-				mdtxt(fmt.Sprintf("your anon post is *#%d*.\n\n_your anon reply key:_\n`%s`\n\nkeep it safe — you'll need it to reply anonymously from your post's thread.", id, secret)),
+				mdtxt(fmt.Sprintf("your anon post is *#%d*.\n\n_your anon reply key:_\n`%s`\n\nkeep it safe, you'll need it to reply anonymously from your post's thread.", id, secret)),
 				nil, nil,
 			),
 		}},
@@ -421,12 +421,6 @@ func (h *EventHandler) reviewBlocks(id int64, text string) []goslack.Block {
 			goslack.NewButtonBlockElement(acceptActionID, fmt.Sprint(id), ptxt("Accept")).WithStyle(goslack.StylePrimary),
 			goslack.NewButtonBlockElement(rejectActionID, fmt.Sprint(id), ptxt("Reject")).WithStyle(goslack.StyleDanger),
 		),
-	}
-}
-
-func (h *EventHandler) postBlocks(id int64, text string) []goslack.Block {
-	return []goslack.Block{
-		goslack.NewSectionBlock(mdtxt(fmt.Sprintf("*anon post #%d:*\n%s", id, text)), nil, nil),
 	}
 }
 
