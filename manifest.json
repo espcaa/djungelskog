@@ -19,6 +19,14 @@
         "description": "submit an anon message to #lgbtq-space",
         "usage_hint": "<message>"
       }
+    ],
+    "shortcuts": [
+      {
+        "name": "reply anonymously",
+        "type": "message",
+        "description": "send an anonymous reply to your anon post",
+        "callback_id": "reply_anon"
+      }
     ]
   },
   "oauth_config": {
