@@ -1,0 +1,16 @@
+{
+  "TCP": {
+    "443": {
+      "HTTPS": true
+    }
+  },
+  "Web": {
+    "djungelskog.crane-clownfish.ts.net:443": {
+      "Handlers": {
+        "/": {
+          "Proxy": "http://bot:8080"
+        }
+      }
+    }
+  }
+}

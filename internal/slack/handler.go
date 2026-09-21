@@ -122,9 +122,11 @@ func (h *EventHandler) handleInteraction(w http.ResponseWriter, r *http.Request,
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	ic, err := goslack.InteractionCallbackParse(r)
 	if err != nil {
+		log.Printf("interaction parse error: %v", err)
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
+	log.Printf("interaction type=%q callback=%q", ic.Type, ic.CallbackID)
 
 	switch ic.Type {
 	case goslack.InteractionTypeViewSubmission:
@@ -151,12 +153,15 @@ func (h *EventHandler) handleViewSubmission(w http.ResponseWriter, ic goslack.In
 
 func (h *EventHandler) handleBlockActions(w http.ResponseWriter, ic goslack.InteractionCallback) {
 	if len(ic.ActionCallback.BlockActions) == 0 {
+		log.Printf("block action received with no actions")
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 	a := ic.ActionCallback.BlockActions[0]
+	log.Printf("block action id=%q value=%q by user=%s", a.ActionID, a.Value, ic.User.ID)
 	id, err := strconv.ParseInt(a.Value, 10, 64)
 	if err != nil {
+		log.Printf("parsing block action value %q as id: %v", a.Value, err)
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
@@ -167,6 +172,7 @@ func (h *EventHandler) handleBlockActions(w http.ResponseWriter, ic goslack.Inte
 	case rejectActionID:
 		h.rejectConfession(w, ic, id)
 	default:
+		log.Printf("unhandled block action: %q", a.ActionID)
 		w.WriteHeader(http.StatusOK)
 	}
 }
@@ -227,7 +233,7 @@ func (h *EventHandler) handleAnonPostSubmit(w http.ResponseWriter, ic goslack.In
 		return
 	}
 
-	ts, _, err := h.client.PostMessage(h.config.Channels.Review, goslack.MsgOptionBlocks(h.reviewBlocks(conf.ID, text)...))
+	_, ts, err := h.client.PostMessage(h.config.Channels.Review, goslack.MsgOptionBlocks(h.reviewBlocks(conf.ID, text)...))
 	if err != nil {
 		log.Printf("posting to review channel: %v", err)
 	} else if ts != "" {
@@ -244,38 +250,47 @@ func (h *EventHandler) handleAnonPostSubmit(w http.ResponseWriter, ic goslack.In
 
 func (h *EventHandler) acceptConfession(w http.ResponseWriter, ic goslack.InteractionCallback, id int64) {
 	ctx := context.Background()
+	log.Printf("accepting confession %d by user=%s", id, ic.User.ID)
 	conf, err := h.queries.GetConfessionByID(ctx, id)
 	if err != nil {
 		log.Printf("getting confession %d: %v", id, err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+	log.Printf("confession %d: text=%q post_channel=%q review_ts=%v status=%q", conf.ID, conf.Text, conf.PostChannel, conf.ReviewTs, conf.Status)
 
-	ts, _, err := h.client.PostMessage(conf.PostChannel, goslack.MsgOptionText(conf.Text, false))
+	_, ts, err := h.client.PostMessage(conf.PostChannel, goslack.MsgOptionText(fmt.Sprintf("*%d*: %s", conf.ID, conf.Text), false))
 	if err != nil {
 		log.Printf("posting accepted confession %d: %v", id, err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+	log.Printf("confession %d posted to %q ts=%q", conf.ID, conf.PostChannel, ts)
 	if _, err := h.queries.AcceptConfession(ctx, db.AcceptConfessionParams{
 		ID:     conf.ID,
 		PostTs: pgtype.Text{String: ts, Valid: true},
 	}); err != nil {
 		log.Printf("accepting confession %d: %v", id, err)
 	}
+	if _, _, err := h.client.PostMessage(h.config.Channels.Log, goslack.MsgOptionText(fmt.Sprintf("anon post #%d accepted", conf.ID), false)); err != nil {
+		log.Printf("logging acceptance: %v", err)
+	}
 
-	h.updateReviewMessage(ctx, conf, "approved", ":white_check_mark:", ic.User.ID)
+	h.updateReviewMessage(ctx, conf, "accepted", ic.User.ID)
+	log.Printf("done accepting confession %d", id)
 	w.WriteHeader(http.StatusOK)
 }
 
 func (h *EventHandler) rejectConfession(w http.ResponseWriter, ic goslack.InteractionCallback, id int64) {
 	ctx := context.Background()
+	log.Printf("rejecting confession %d by user=%s", id, ic.User.ID)
 	conf, err := h.queries.GetConfessionByID(ctx, id)
 	if err != nil {
 		log.Printf("getting confession %d: %v", id, err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+	log.Printf("confession %d: text=%q post_channel=%q review_ts=%v status=%q", conf.ID, conf.Text, conf.PostChannel, conf.ReviewTs, conf.Status)
 
 	if err := h.queries.DeleteConfession(ctx, conf.ID); err != nil {
 		log.Printf("deleting confession %d: %v", id, err)
@@ -284,7 +299,8 @@ func (h *EventHandler) rejectConfession(w http.ResponseWriter, ic goslack.Intera
 		log.Printf("logging rejection: %v", err)
 	}
 
-	h.updateReviewMessage(ctx, conf, "rejected", ":x:", ic.User.ID)
+	h.updateReviewMessage(ctx, conf, "rejected", ic.User.ID)
+	log.Printf("done rejecting confession %d", id)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -335,19 +351,26 @@ func (h *EventHandler) handleAnonReplySubmit(w http.ResponseWriter, ic goslack.I
 }
 
 func (h *EventHandler) replyContext(ic goslack.InteractionCallback) string {
-	return fmt.Sprintf("%s:%s", ic.Channel.ID, ic.MessageTs)
+	ts := ic.MessageTs
+	if ic.Message.ThreadTimestamp != "" {
+		ts = ic.Message.ThreadTimestamp
+	}
+	return fmt.Sprintf("%s:%s", ic.Channel.ID, ts)
 }
 
-func (h *EventHandler) updateReviewMessage(ctx context.Context, conf db.Confession, verdict, emoji, reviewer string) {
+func (h *EventHandler) updateReviewMessage(ctx context.Context, conf db.Confession, verdict, reviewer string) {
 	if !conf.ReviewTs.Valid {
+		log.Printf("skipping review message update for confession %d: no review_ts", conf.ID)
 		return
 	}
-	text := fmt.Sprintf("anon post #%d %s %s by <@%s> at %s", conf.ID, verdict, emoji, reviewer, time.Now().Format(reviewedAtTimeFormat))
+	text := fmt.Sprintf("#%d: %s by <@%s> at %s\n\n%s", conf.ID, verdict, reviewer, time.Now().Format(reviewedAtTimeFormat), conf.Text)
 	if _, _, _, err := h.client.UpdateMessage(h.config.Channels.Review, conf.ReviewTs.String,
 		goslack.MsgOptionBlocks(goslack.NewSectionBlock(mdtxt(text), nil, nil)),
 	); err != nil {
 		log.Printf("updating review message for confession %d: %v", conf.ID, err)
+		return
 	}
+	log.Printf("updated review message ts=%q for confession %d", conf.ReviewTs.String, conf.ID)
 }
 
 func (h *EventHandler) handleEvent(w http.ResponseWriter, body []byte) {

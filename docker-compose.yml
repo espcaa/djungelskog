@@ -1,4 +1,20 @@
 services:
+  ts-bot:
+    image: tailscale/tailscale:latest
+    hostname: ${DEVICE_NAME:?DEVICE_NAME must be set in .env}
+    environment:
+      - TS_USERSPACE=false
+      - TS_AUTHKEY=${TS_AUTHKEY:?TS_AUTHKEY must be set in .env}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_SERVE_CONFIG=/config/serve.json
+    volumes:
+      - ts_data:/var/lib/tailscale
+      - ./ts-serve.json:/config/serve.json:ro
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+    restart: unless-stopped
+
   bot:
     build: .
     env_file: .env
@@ -28,3 +44,4 @@ services:
 
 volumes:
   db_data:
+  ts_data:
