@@ -1,0 +1,36 @@
+{
+  "_metadata": {
+    "major_version": 2
+  },
+  "display_information": {
+    "name": "djungelskog",
+    "description": "anon bot for #lgbtq-space!",
+    "background_color": "#835C3B"
+  },
+  "features": {
+    "bot_user": {
+      "display_name": "djungelskog",
+      "always_online": true
+    },
+    "slash_commands": [
+      {
+        "command": "/djungelskog",
+        "url": "https://djungelskog.hackclub.cc/events",
+        "description": "submit an anon message to #lgbtq-space",
+        "usage_hint": "<message>"
+      }
+    ]
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": ["commands", "chat:write"]
+    }
+  },
+  "settings": {
+    "interactivity": {
+      "is_enabled": true,
+      "request_url": "https://djungelskog.hackclub.cc/events"
+    },
+    "socket_mode_enabled": false
+  }
+}
