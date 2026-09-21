@@ -385,7 +385,7 @@ func (h *EventHandler) handleCallback(ev *slackevents.EventsAPIEvent) {
 func (h *EventHandler) newAnonPostView() goslack.ModalViewRequest {
 	return goslack.ModalViewRequest{
 		Type:       goslack.VTModal,
-		Title:      ptxt("new anon post in #lgbtq-space"),
+		Title:      ptxt("new anon post"),
 		Close:      ptxt("Cancel"),
 		Submit:     ptxt("Post"),
 		CallbackID: anonPostViewCallbackID,
