@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -37,6 +38,8 @@ const (
 	acceptActionID   = "accept_confession"
 	rejectActionID   = "reject_confession"
 	acceptTwActionID = "accept_confession_tw"
+
+	undoActionID = "undo_decision"
 
 	reviewedAtTimeFormat = "Jan 2, 2006 15:04"
 )
@@ -181,6 +184,15 @@ func (h *EventHandler) handleBlockActions(w http.ResponseWriter, ic slack.Intera
 		w.WriteHeader(http.StatusOK)
 	case rejectActionID:
 		h.rejectConfession(w, ic, id)
+	case undoActionID:
+		ctx := context.Background()
+		conf, err := h.queries.GetConfessionByID(ctx, id)
+		if err != nil {
+			log.Printf("getting confession %d: %v", id, err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		h.undoConfessionDecision(w, ic, conf)
 	default:
 		log.Printf("unhandled block action: %q", a.ActionID)
 		w.WriteHeader(http.StatusOK)
@@ -286,6 +298,7 @@ func (h *EventHandler) acceptConfession(w http.ResponseWriter, ic slack.Interact
 	log.Printf("confession %d: text=%q post_channel=%q review_ts=%v status=%q", conf.ID, conf.Text, conf.PostChannel, conf.ReviewTs, conf.Status)
 
 	var ts string
+	var threadTs pgtype.Text
 
 	if !tw {
 		_, ts, err = h.client.PostMessage(conf.PostChannel, slack.MsgOptionText(fmt.Sprintf("*%d*: %s", conf.ID, conf.Text), false))
@@ -295,23 +308,25 @@ func (h *EventHandler) acceptConfession(w http.ResponseWriter, ic slack.Interact
 			return
 		}
 	} else {
-		_, ts, err = h.client.PostMessage(conf.PostChannel, slack.MsgOptionText(fmt.Sprintf("*%d*: TW: %s", conf.ID, twText), false))
+		_, ts, err = h.client.PostMessage(conf.PostChannel, slack.MsgOptionText(fmt.Sprintf("*#%d*: TW: %s", conf.ID, twText), false))
 		if err != nil {
 			log.Printf("posting accepted confession %d with TW: %v", id, err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		_, _, err = h.client.PostMessage(conf.PostChannel, slack.MsgOptionTS(ts), slack.MsgOptionText(fmt.Sprintf("%s", conf.Text), false))
+		_, replyTs, err := h.client.PostMessage(conf.PostChannel, slack.MsgOptionTS(ts), slack.MsgOptionText(fmt.Sprintf("%s", conf.Text), false))
 		if err != nil {
 			log.Printf("posting confession %d as thread reply: %v", id, err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
+		threadTs = pgtype.Text{String: replyTs, Valid: true}
 	}
 	log.Printf("confession %d posted to %q ts=%q", conf.ID, conf.PostChannel, ts)
 	if _, err := h.queries.AcceptConfession(ctx, db.AcceptConfessionParams{
-		ID:     conf.ID,
-		PostTs: pgtype.Text{String: ts, Valid: true},
+		ID:           conf.ID,
+		PostTs:       pgtype.Text{String: ts, Valid: true},
+		PostThreadTs: threadTs,
 	}); err != nil {
 		log.Printf("accepting confession %d: %v", id, err)
 	}
@@ -321,6 +336,68 @@ func (h *EventHandler) acceptConfession(w http.ResponseWriter, ic slack.Interact
 
 	h.updateReviewMessage(ctx, conf, "accepted", ic.User.ID)
 	log.Printf("done accepting confession %d", id)
+	w.WriteHeader(http.StatusOK)
+}
+
+func (h *EventHandler) undoConfessionDecision(w http.ResponseWriter, ic slack.InteractionCallback, conf db.Confession) {
+	ctx := context.Background()
+	log.Printf("undoing decision for confession %d by user=%s", conf.ID, ic.User.ID)
+
+	// if confession is rejected, just get it & put it back
+	if conf.Status == "rejected" {
+		log.Printf("confession %d was rejected, putting it back in review", conf.ID)
+		_, _, _, err :=
+			h.client.UpdateMessage(h.config.Channels.Review, conf.ReviewTs.String,
+				slack.MsgOptionBlocks(h.reviewBlocks(conf.ID, conf.Text)...),
+			)
+		if err != nil {
+			log.Printf("updating review message for confession %d: %v", conf.ID, err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if _, err := h.queries.UndoConfession(ctx, conf.ID); err != nil {
+			log.Printf("undoing rejection for confession %d: %v", conf.ID, err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		log.Printf("done undoing rejection for confession %d", conf.ID)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if conf.Status == "accepted" {
+		log.Printf("confession %d was accepted, deleting post and putting it back in review", conf.ID)
+
+		// tw posts have a thread reply, so delete that first
+		if conf.PostThreadTs.Valid {
+			if _, _, err := h.client.DeleteMessage(conf.PostChannel, conf.PostThreadTs.String); err != nil && !isMessageNotFound(err) {
+				log.Printf("deleting accepted confession %d thread reply: %v", conf.ID, err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+		}
+		if _, _, err := h.client.DeleteMessage(conf.PostChannel, conf.PostTs.String); err != nil && !isMessageNotFound(err) {
+			log.Printf("deleting accepted confession %d: %v", conf.ID, err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if _, err := h.queries.UndoConfession(ctx, conf.ID); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if _, _, _, err := h.client.UpdateMessage(h.config.Channels.Review, conf.ReviewTs.String,
+			slack.MsgOptionBlocks(h.reviewBlocks(conf.ID, conf.Text)...),
+		); err != nil {
+			log.Printf("updating review message for confession %d: %v", conf.ID, err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		log.Printf("done undoing acceptance for confession %d", conf.ID)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	log.Printf("undoing decision for confession %d: nothing to undo (status=%q)", conf.ID, conf.Status)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -335,9 +412,13 @@ func (h *EventHandler) rejectConfession(w http.ResponseWriter, ic slack.Interact
 	}
 	log.Printf("confession %d: text=%q post_channel=%q review_ts=%v status=%q", conf.ID, conf.Text, conf.PostChannel, conf.ReviewTs, conf.Status)
 
-	if err := h.queries.DeleteConfession(ctx, conf.ID); err != nil {
-		log.Printf("deleting confession %d: %v", id, err)
+	conf, err = h.queries.RejectConfession(ctx, conf.ID)
+	if err != nil {
+		log.Printf("rejecting confession %d: %v", id, err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
 	}
+
 	if _, _, err := h.client.PostMessage(h.config.Channels.Log, slack.MsgOptionText(fmt.Sprintf("anon post #%d rejected", conf.ID), false)); err != nil {
 		log.Printf("logging rejection: %v", err)
 	}
@@ -406,9 +487,12 @@ func (h *EventHandler) updateReviewMessage(_ context.Context, conf db.Confession
 		log.Printf("skipping review message update for confession %d: no review_ts", conf.ID)
 		return
 	}
-	text := fmt.Sprintf("#\u200b%d: %s by <@%s> at %s\n\n%s", conf.ID, verdict, reviewer, time.Now().Format(reviewedAtTimeFormat), conf.Text)
+	text := fmt.Sprintf("*#\u200b%d:* %s by <@%s> at %s\n\n%s", conf.ID, verdict, reviewer, time.Now().Format(reviewedAtTimeFormat), conf.Text)
+
 	if _, _, _, err := h.client.UpdateMessage(h.config.Channels.Review, conf.ReviewTs.String,
-		slack.MsgOptionBlocks(slack.NewSectionBlock(mdtxt(text), nil, nil)),
+		slack.MsgOptionBlocks(slack.NewSectionBlock(mdtxt(text), nil, nil), slack.NewActionBlock("review_actions",
+			slack.NewButtonBlockElement(undoActionID, fmt.Sprint(conf.ID), ptxt(":rewind: Undo")).WithStyle(slack.StyleDefault),
+		)),
 	); err != nil {
 		log.Printf("updating review message for confession %d: %v", conf.ID, err)
 		return
@@ -499,11 +583,11 @@ func (h *EventHandler) confirmationView(id int64, secret string) *slack.ModalVie
 
 func (h *EventHandler) reviewBlocks(id int64, text string) []slack.Block {
 	return []slack.Block{
-		slack.NewSectionBlock(mdtxt(fmt.Sprintf("*anon post #%d:*\n%s", id, text)), nil, nil),
+		slack.NewSectionBlock(mdtxt(fmt.Sprintf("*#​%d:*\n\n%s", id, text)), nil, nil),
 		slack.NewActionBlock("review_actions",
 			slack.NewButtonBlockElement(acceptActionID, fmt.Sprint(id), ptxt("Accept")).WithStyle(slack.StylePrimary),
 			slack.NewButtonBlockElement(rejectActionID, fmt.Sprint(id), ptxt("Reject")).WithStyle(slack.StyleDanger),
-			slack.NewButtonBlockElement(acceptTwActionID, fmt.Sprint(id), ptxt("Accept with TW")).WithStyle(slack.StylePrimary),
+			slack.NewButtonBlockElement(acceptTwActionID, fmt.Sprint(id), ptxt("Accept with TW")).WithStyle(slack.StyleDefault),
 		),
 	}
 }
@@ -533,6 +617,11 @@ func newSecret() (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
+}
+
+func isMessageNotFound(err error) bool {
+	var slackErr *slack.SlackErrorResponse
+	return errors.As(err, &slackErr) && slackErr.Err == "message_not_found"
 }
 
 func replyKey(secret, userID string) string {

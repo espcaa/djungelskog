@@ -9,13 +9,14 @@ import (
 )
 
 type Confession struct {
-	ID          int64
-	PostChannel string
-	Text        string
-	Status      string
-	CreatedAt   pgtype.Timestamptz
-	UpdatedAt   pgtype.Timestamptz
-	ReplyKey    string
-	ReviewTs    pgtype.Text
-	PostTs      pgtype.Text
+	ID           int64
+	PostChannel  string
+	Text         string
+	Status       string
+	CreatedAt    pgtype.Timestamptz
+	UpdatedAt    pgtype.Timestamptz
+	ReplyKey     string
+	ReviewTs     pgtype.Text
+	PostTs       pgtype.Text
+	PostThreadTs pgtype.Text
 }

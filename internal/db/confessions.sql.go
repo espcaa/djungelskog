@@ -13,18 +13,19 @@ import (
 
 const acceptConfession = `-- name: AcceptConfession :one
 UPDATE confessions
-SET status = 'accepted', post_ts = $2, updated_at = now()
+SET status = 'accepted', post_ts = $2, post_thread_ts = $3, updated_at = now()
 WHERE id = $1
-RETURNING id, post_channel, text, status, created_at, updated_at, reply_key, review_ts, post_ts
+RETURNING id, post_channel, text, status, created_at, updated_at, reply_key, review_ts, post_ts, post_thread_ts
 `
 
 type AcceptConfessionParams struct {
-	ID     int64
-	PostTs pgtype.Text
+	ID           int64
+	PostTs       pgtype.Text
+	PostThreadTs pgtype.Text
 }
 
 func (q *Queries) AcceptConfession(ctx context.Context, arg AcceptConfessionParams) (Confession, error) {
-	row := q.db.QueryRow(ctx, acceptConfession, arg.ID, arg.PostTs)
+	row := q.db.QueryRow(ctx, acceptConfession, arg.ID, arg.PostTs, arg.PostThreadTs)
 	var i Confession
 	err := row.Scan(
 		&i.ID,
@@ -36,6 +37,7 @@ func (q *Queries) AcceptConfession(ctx context.Context, arg AcceptConfessionPara
 		&i.ReplyKey,
 		&i.ReviewTs,
 		&i.PostTs,
+		&i.PostThreadTs,
 	)
 	return i, err
 }
@@ -43,7 +45,7 @@ func (q *Queries) AcceptConfession(ctx context.Context, arg AcceptConfessionPara
 const createConfession = `-- name: CreateConfession :one
 INSERT INTO confessions (text, reply_key, post_channel)
 VALUES ($1, $2, $3)
-RETURNING id, post_channel, text, status, created_at, updated_at, reply_key, review_ts, post_ts
+RETURNING id, post_channel, text, status, created_at, updated_at, reply_key, review_ts, post_ts, post_thread_ts
 `
 
 type CreateConfessionParams struct {
@@ -65,6 +67,7 @@ func (q *Queries) CreateConfession(ctx context.Context, arg CreateConfessionPara
 		&i.ReplyKey,
 		&i.ReviewTs,
 		&i.PostTs,
+		&i.PostThreadTs,
 	)
 	return i, err
 }
@@ -80,7 +83,7 @@ func (q *Queries) DeleteConfession(ctx context.Context, id int64) error {
 }
 
 const getConfessionByID = `-- name: GetConfessionByID :one
-SELECT id, post_channel, text, status, created_at, updated_at, reply_key, review_ts, post_ts FROM confessions
+SELECT id, post_channel, text, status, created_at, updated_at, reply_key, review_ts, post_ts, post_thread_ts FROM confessions
 WHERE id = $1
 `
 
@@ -97,12 +100,13 @@ func (q *Queries) GetConfessionByID(ctx context.Context, id int64) (Confession, 
 		&i.ReplyKey,
 		&i.ReviewTs,
 		&i.PostTs,
+		&i.PostThreadTs,
 	)
 	return i, err
 }
 
 const getConfessionByReplyKey = `-- name: GetConfessionByReplyKey :one
-SELECT id, post_channel, text, status, created_at, updated_at, reply_key, review_ts, post_ts FROM confessions
+SELECT id, post_channel, text, status, created_at, updated_at, reply_key, review_ts, post_ts, post_thread_ts FROM confessions
 WHERE reply_key = $1
 `
 
@@ -119,6 +123,32 @@ func (q *Queries) GetConfessionByReplyKey(ctx context.Context, replyKey string) 
 		&i.ReplyKey,
 		&i.ReviewTs,
 		&i.PostTs,
+		&i.PostThreadTs,
+	)
+	return i, err
+}
+
+const rejectConfession = `-- name: RejectConfession :one
+UPDATE confessions
+SET status = 'rejected', updated_at = now()
+WHERE id = $1
+RETURNING id, post_channel, text, status, created_at, updated_at, reply_key, review_ts, post_ts, post_thread_ts
+`
+
+func (q *Queries) RejectConfession(ctx context.Context, id int64) (Confession, error) {
+	row := q.db.QueryRow(ctx, rejectConfession, id)
+	var i Confession
+	err := row.Scan(
+		&i.ID,
+		&i.PostChannel,
+		&i.Text,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ReplyKey,
+		&i.ReviewTs,
+		&i.PostTs,
+		&i.PostThreadTs,
 	)
 	return i, err
 }
@@ -127,7 +157,7 @@ const setConfessionReviewTs = `-- name: SetConfessionReviewTs :one
 UPDATE confessions
 SET review_ts = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, post_channel, text, status, created_at, updated_at, reply_key, review_ts, post_ts
+RETURNING id, post_channel, text, status, created_at, updated_at, reply_key, review_ts, post_ts, post_thread_ts
 `
 
 type SetConfessionReviewTsParams struct {
@@ -148,6 +178,32 @@ func (q *Queries) SetConfessionReviewTs(ctx context.Context, arg SetConfessionRe
 		&i.ReplyKey,
 		&i.ReviewTs,
 		&i.PostTs,
+		&i.PostThreadTs,
+	)
+	return i, err
+}
+
+const undoConfession = `-- name: UndoConfession :one
+UPDATE confessions
+SET status = 'pending', post_ts = NULL, post_thread_ts = NULL, updated_at = now()
+WHERE id = $1
+RETURNING id, post_channel, text, status, created_at, updated_at, reply_key, review_ts, post_ts, post_thread_ts
+`
+
+func (q *Queries) UndoConfession(ctx context.Context, id int64) (Confession, error) {
+	row := q.db.QueryRow(ctx, undoConfession, id)
+	var i Confession
+	err := row.Scan(
+		&i.ID,
+		&i.PostChannel,
+		&i.Text,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ReplyKey,
+		&i.ReviewTs,
+		&i.PostTs,
+		&i.PostThreadTs,
 	)
 	return i, err
 }

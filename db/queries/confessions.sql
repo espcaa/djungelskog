@@ -19,10 +19,22 @@ RETURNING *;
 
 -- name: AcceptConfession :one
 UPDATE confessions
-SET status = 'accepted', post_ts = $2, updated_at = now()
+SET status = 'accepted', post_ts = $2, post_thread_ts = $3, updated_at = now()
 WHERE id = $1
 RETURNING *;
 
 -- name: DeleteConfession :exec
 DELETE FROM confessions
 WHERE id = $1;
+
+-- name: RejectConfession :one
+UPDATE confessions
+SET status = 'rejected', updated_at = now()
+WHERE id = $1
+RETURNING *;
+
+-- name: UndoConfession :one
+UPDATE confessions
+SET status = 'pending', post_ts = NULL, post_thread_ts = NULL, updated_at = now()
+WHERE id = $1
+RETURNING *;
