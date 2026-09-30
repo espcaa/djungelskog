@@ -18,7 +18,7 @@ import (
 	"github.com/espcaa/djungelskog/internal/db"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
-	goslack "github.com/slack-go/slack"
+	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
 )
 
@@ -49,13 +49,13 @@ type Config struct {
 }
 
 type EventHandler struct {
-	client        *goslack.Client
+	client        *slack.Client
 	signingSecret string
 	config        Config
 	queries       *db.Queries
 }
 
-func NewEventHandler(client *goslack.Client, signingSecret string, config Config, pool *pgxpool.Pool) *EventHandler {
+func NewEventHandler(client *slack.Client, signingSecret string, config Config, pool *pgxpool.Pool) *EventHandler {
 	return &EventHandler{
 		client:        client,
 		signingSecret: signingSecret,
@@ -71,7 +71,7 @@ func (h *EventHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sv, err := goslack.NewSecretsVerifier(r.Header, h.signingSecret)
+	sv, err := slack.NewSecretsVerifier(r.Header, h.signingSecret)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		return
@@ -105,13 +105,12 @@ func (h *EventHandler) handleForm(w http.ResponseWriter, r *http.Request, body [
 		return
 	}
 
-	cmd, err := goslack.SlashCommandParse(r)
+	cmd, err := slack.SlashCommandParse(r)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 	if _, err := h.client.OpenView(cmd.TriggerID, h.newAnonPostView()); err != nil {
-		log.Printf("opening anon post view: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -120,7 +119,7 @@ func (h *EventHandler) handleForm(w http.ResponseWriter, r *http.Request, body [
 
 func (h *EventHandler) handleInteraction(w http.ResponseWriter, r *http.Request, body []byte) {
 	r.Body = io.NopCloser(bytes.NewReader(body))
-	ic, err := goslack.InteractionCallbackParse(r)
+	ic, err := slack.InteractionCallbackParse(r)
 	if err != nil {
 		log.Printf("interaction parse error: %v", err)
 		w.WriteHeader(http.StatusBadRequest)
@@ -129,39 +128,36 @@ func (h *EventHandler) handleInteraction(w http.ResponseWriter, r *http.Request,
 	log.Printf("interaction type=%q callback=%q", ic.Type, ic.CallbackID)
 
 	switch ic.Type {
-	case goslack.InteractionTypeViewSubmission:
+	case slack.InteractionTypeViewSubmission:
 		h.handleViewSubmission(w, ic)
-	case goslack.InteractionTypeBlockActions:
+	case slack.InteractionTypeBlockActions:
 		h.handleBlockActions(w, ic)
-	case goslack.InteractionTypeMessageAction:
+	case slack.InteractionTypeMessageAction:
 		h.handleMessageAction(w, ic)
 	default:
 		w.WriteHeader(http.StatusOK)
 	}
 }
 
-func (h *EventHandler) handleViewSubmission(w http.ResponseWriter, ic goslack.InteractionCallback) {
+func (h *EventHandler) handleViewSubmission(w http.ResponseWriter, ic slack.InteractionCallback) {
 	switch ic.View.CallbackID {
 	case anonPostViewCallbackID:
 		h.handleAnonPostSubmit(w, ic)
 	case replyAnonViewCallbackID:
 		h.handleAnonReplySubmit(w, ic)
 	default:
-		respondView(w, goslack.NewClearViewSubmissionResponse())
+		respondView(w, slack.NewClearViewSubmissionResponse())
 	}
 }
 
-func (h *EventHandler) handleBlockActions(w http.ResponseWriter, ic goslack.InteractionCallback) {
+func (h *EventHandler) handleBlockActions(w http.ResponseWriter, ic slack.InteractionCallback) {
 	if len(ic.ActionCallback.BlockActions) == 0 {
-		log.Printf("block action received with no actions")
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 	a := ic.ActionCallback.BlockActions[0]
-	log.Printf("block action id=%q value=%q by user=%s", a.ActionID, a.Value, ic.User.ID)
 	id, err := strconv.ParseInt(a.Value, 10, 64)
 	if err != nil {
-		log.Printf("parsing block action value %q as id: %v", a.Value, err)
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
@@ -177,39 +173,38 @@ func (h *EventHandler) handleBlockActions(w http.ResponseWriter, ic goslack.Inte
 	}
 }
 
-func (h *EventHandler) handleMessageAction(w http.ResponseWriter, ic goslack.InteractionCallback) {
-	view := goslack.ModalViewRequest{
-		Type:            goslack.VTModal,
+func (h *EventHandler) handleMessageAction(w http.ResponseWriter, ic slack.InteractionCallback) {
+	view := slack.ModalViewRequest{
+		Type:            slack.VTModal,
 		Title:           ptxt("reply anonymously"),
 		Close:           ptxt("Cancel"),
 		Submit:          ptxt("Submit"),
 		CallbackID:      replyAnonViewCallbackID,
 		PrivateMetadata: h.replyContext(ic),
-		Blocks: goslack.Blocks{BlockSet: []goslack.Block{
-			goslack.NewInputBlock(replyAnonKeyActionID,
+		Blocks: slack.Blocks{BlockSet: []slack.Block{
+			slack.NewInputBlock(replyAnonKeyActionID,
 				ptxt("your anon reply key"),
 				ptxt("one you got when you submitted the post"),
-				goslack.NewPlainTextInputBlockElement(nil, replyAnonKeyActionID),
+				slack.NewPlainTextInputBlockElement(nil, replyAnonKeyActionID),
 			),
-			goslack.NewInputBlock(replyAnonTextActionID,
+			slack.NewInputBlock(replyAnonTextActionID,
 				ptxt("your anonymous reply"),
 				nil,
-				goslack.NewPlainTextInputBlockElement(nil, replyAnonTextActionID).WithMultiline(true),
+				slack.NewPlainTextInputBlockElement(nil, replyAnonTextActionID).WithMultiline(true),
 			),
 		}},
 	}
 	if _, err := h.client.OpenView(ic.TriggerID, view); err != nil {
-		log.Printf("opening reply view: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
 }
 
-func (h *EventHandler) handleAnonPostSubmit(w http.ResponseWriter, ic goslack.InteractionCallback) {
+func (h *EventHandler) handleAnonPostSubmit(w http.ResponseWriter, ic slack.InteractionCallback) {
 	text := strings.TrimSpace(ic.View.State.Values[anonPostTextActionID][anonPostTextActionID].Value)
 	if text == "" {
-		respondView(w, goslack.NewErrorsViewSubmissionResponse(map[string]string{
+		respondView(w, slack.NewErrorsViewSubmissionResponse(map[string]string{
 			anonPostTextActionID: "your message can't be empty",
 		}))
 		return
@@ -217,7 +212,6 @@ func (h *EventHandler) handleAnonPostSubmit(w http.ResponseWriter, ic goslack.In
 
 	secret, err := newSecret()
 	if err != nil {
-		log.Printf("generating secret: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -228,12 +222,11 @@ func (h *EventHandler) handleAnonPostSubmit(w http.ResponseWriter, ic goslack.In
 		PostChannel: h.config.Channels.Post,
 	})
 	if err != nil {
-		log.Printf("creating confession: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
-	_, ts, err := h.client.PostMessage(h.config.Channels.Review, goslack.MsgOptionBlocks(h.reviewBlocks(conf.ID, text)...))
+	_, ts, err := h.client.PostMessage(h.config.Channels.Review, slack.MsgOptionBlocks(h.reviewBlocks(conf.ID, text)...))
 	if err != nil {
 		log.Printf("posting to review channel: %v", err)
 	} else if ts != "" {
@@ -245,10 +238,10 @@ func (h *EventHandler) handleAnonPostSubmit(w http.ResponseWriter, ic goslack.In
 		}
 	}
 
-	respondView(w, goslack.NewUpdateViewSubmissionResponse(h.confirmationView(conf.ID, secret)))
+	respondView(w, slack.NewUpdateViewSubmissionResponse(h.confirmationView(conf.ID, secret)))
 }
 
-func (h *EventHandler) acceptConfession(w http.ResponseWriter, ic goslack.InteractionCallback, id int64) {
+func (h *EventHandler) acceptConfession(w http.ResponseWriter, ic slack.InteractionCallback, id int64) {
 	ctx := context.Background()
 	log.Printf("accepting confession %d by user=%s", id, ic.User.ID)
 	conf, err := h.queries.GetConfessionByID(ctx, id)
@@ -259,7 +252,7 @@ func (h *EventHandler) acceptConfession(w http.ResponseWriter, ic goslack.Intera
 	}
 	log.Printf("confession %d: text=%q post_channel=%q review_ts=%v status=%q", conf.ID, conf.Text, conf.PostChannel, conf.ReviewTs, conf.Status)
 
-	_, ts, err := h.client.PostMessage(conf.PostChannel, goslack.MsgOptionText(fmt.Sprintf("*%d*: %s", conf.ID, conf.Text), false))
+	_, ts, err := h.client.PostMessage(conf.PostChannel, slack.MsgOptionText(fmt.Sprintf("*%d*: %s", conf.ID, conf.Text), false))
 	if err != nil {
 		log.Printf("posting accepted confession %d: %v", id, err)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -272,7 +265,7 @@ func (h *EventHandler) acceptConfession(w http.ResponseWriter, ic goslack.Intera
 	}); err != nil {
 		log.Printf("accepting confession %d: %v", id, err)
 	}
-	if _, _, err := h.client.PostMessage(h.config.Channels.Log, goslack.MsgOptionText(fmt.Sprintf("anon post #%d accepted", conf.ID), false)); err != nil {
+	if _, _, err := h.client.PostMessage(h.config.Channels.Log, slack.MsgOptionText(fmt.Sprintf("anon post #%d accepted", conf.ID), false)); err != nil {
 		log.Printf("logging acceptance: %v", err)
 	}
 
@@ -281,7 +274,7 @@ func (h *EventHandler) acceptConfession(w http.ResponseWriter, ic goslack.Intera
 	w.WriteHeader(http.StatusOK)
 }
 
-func (h *EventHandler) rejectConfession(w http.ResponseWriter, ic goslack.InteractionCallback, id int64) {
+func (h *EventHandler) rejectConfession(w http.ResponseWriter, ic slack.InteractionCallback, id int64) {
 	ctx := context.Background()
 	log.Printf("rejecting confession %d by user=%s", id, ic.User.ID)
 	conf, err := h.queries.GetConfessionByID(ctx, id)
@@ -295,7 +288,7 @@ func (h *EventHandler) rejectConfession(w http.ResponseWriter, ic goslack.Intera
 	if err := h.queries.DeleteConfession(ctx, conf.ID); err != nil {
 		log.Printf("deleting confession %d: %v", id, err)
 	}
-	if _, _, err := h.client.PostMessage(h.config.Channels.Log, goslack.MsgOptionText(fmt.Sprintf("anon post #%d rejected", conf.ID), false)); err != nil {
+	if _, _, err := h.client.PostMessage(h.config.Channels.Log, slack.MsgOptionText(fmt.Sprintf("anon post #%d rejected", conf.ID), false)); err != nil {
 		log.Printf("logging rejection: %v", err)
 	}
 
@@ -304,17 +297,17 @@ func (h *EventHandler) rejectConfession(w http.ResponseWriter, ic goslack.Intera
 	w.WriteHeader(http.StatusOK)
 }
 
-func (h *EventHandler) handleAnonReplySubmit(w http.ResponseWriter, ic goslack.InteractionCallback) {
+func (h *EventHandler) handleAnonReplySubmit(w http.ResponseWriter, ic slack.InteractionCallback) {
 	secret := strings.TrimSpace(ic.View.State.Values[replyAnonKeyActionID][replyAnonKeyActionID].Value)
 	text := strings.TrimSpace(ic.View.State.Values[replyAnonTextActionID][replyAnonTextActionID].Value)
 	if secret == "" {
-		respondView(w, goslack.NewErrorsViewSubmissionResponse(map[string]string{
+		respondView(w, slack.NewErrorsViewSubmissionResponse(map[string]string{
 			replyAnonKeyActionID: "enter your anon reply key",
 		}))
 		return
 	}
 	if text == "" {
-		respondView(w, goslack.NewErrorsViewSubmissionResponse(map[string]string{
+		respondView(w, slack.NewErrorsViewSubmissionResponse(map[string]string{
 			replyAnonTextActionID: "write your reply",
 		}))
 		return
@@ -322,35 +315,35 @@ func (h *EventHandler) handleAnonReplySubmit(w http.ResponseWriter, ic goslack.I
 
 	conf, err := h.queries.GetConfessionByReplyKey(context.Background(), replyKey(secret, ic.User.ID))
 	if err != nil {
-		respondView(w, goslack.NewErrorsViewSubmissionResponse(map[string]string{
+		respondView(w, slack.NewErrorsViewSubmissionResponse(map[string]string{
 			replyAnonKeyActionID: "no anon post matches that key",
 		}))
 		return
 	}
 	if !conf.PostTs.Valid {
-		respondView(w, goslack.NewErrorsViewSubmissionResponse(map[string]string{
+		respondView(w, slack.NewErrorsViewSubmissionResponse(map[string]string{
 			replyAnonKeyActionID: "this post hasn't been approved yet",
 		}))
 		return
 	}
 	if ic.View.PrivateMetadata != fmt.Sprintf("%s:%s", conf.PostChannel, conf.PostTs.String) {
-		respondView(w, goslack.NewErrorsViewSubmissionResponse(map[string]string{
+		respondView(w, slack.NewErrorsViewSubmissionResponse(map[string]string{
 			replyAnonKeyActionID: "that key doesn't belong to this post message",
 		}))
 		return
 	}
 
-	if _, _, err := h.client.PostMessage(conf.PostChannel, goslack.MsgOptionTS(conf.PostTs.String), goslack.MsgOptionText(text, false)); err != nil {
+	if _, _, err := h.client.PostMessage(conf.PostChannel, slack.MsgOptionTS(conf.PostTs.String), slack.MsgOptionText(text, false)); err != nil {
 		log.Printf("posting anon reply: %v", err)
-		respondView(w, goslack.NewErrorsViewSubmissionResponse(map[string]string{
+		respondView(w, slack.NewErrorsViewSubmissionResponse(map[string]string{
 			replyAnonTextActionID: "couldn't post your reply",
 		}))
 		return
 	}
-	respondView(w, goslack.NewClearViewSubmissionResponse())
+	respondView(w, slack.NewClearViewSubmissionResponse())
 }
 
-func (h *EventHandler) replyContext(ic goslack.InteractionCallback) string {
+func (h *EventHandler) replyContext(ic slack.InteractionCallback) string {
 	ts := ic.MessageTs
 	if ic.Message.ThreadTimestamp != "" {
 		ts = ic.Message.ThreadTimestamp
@@ -358,14 +351,14 @@ func (h *EventHandler) replyContext(ic goslack.InteractionCallback) string {
 	return fmt.Sprintf("%s:%s", ic.Channel.ID, ts)
 }
 
-func (h *EventHandler) updateReviewMessage(ctx context.Context, conf db.Confession, verdict, reviewer string) {
+func (h *EventHandler) updateReviewMessage(_ context.Context, conf db.Confession, verdict, reviewer string) {
 	if !conf.ReviewTs.Valid {
 		log.Printf("skipping review message update for confession %d: no review_ts", conf.ID)
 		return
 	}
-	text := fmt.Sprintf("#%d: %s by <@%s> at %s\n\n%s", conf.ID, verdict, reviewer, time.Now().Format(reviewedAtTimeFormat), conf.Text)
+	text := fmt.Sprintf("#\u200b%d: %s by <@%s> at %s\n\n%s", conf.ID, verdict, reviewer, time.Now().Format(reviewedAtTimeFormat), conf.Text)
 	if _, _, _, err := h.client.UpdateMessage(h.config.Channels.Review, conf.ReviewTs.String,
-		goslack.MsgOptionBlocks(goslack.NewSectionBlock(mdtxt(text), nil, nil)),
+		slack.MsgOptionBlocks(slack.NewSectionBlock(mdtxt(text), nil, nil)),
 	); err != nil {
 		log.Printf("updating review message for confession %d: %v", conf.ID, err)
 		return
@@ -405,61 +398,65 @@ func (h *EventHandler) handleCallback(ev *slackevents.EventsAPIEvent) {
 	}
 }
 
-func (h *EventHandler) newAnonPostView() goslack.ModalViewRequest {
-	return goslack.ModalViewRequest{
-		Type:       goslack.VTModal,
+func (h *EventHandler) newAnonPostView() slack.ModalViewRequest {
+	return slack.ModalViewRequest{
+		Type:       slack.VTModal,
 		Title:      ptxt("new anon post"),
 		Close:      ptxt("Cancel"),
 		Submit:     ptxt("Post"),
 		CallbackID: anonPostViewCallbackID,
-		Blocks: goslack.Blocks{BlockSet: []goslack.Block{
-			goslack.NewInputBlock(anonPostTextActionID,
+		Blocks: slack.Blocks{BlockSet: []slack.Block{
+			slack.NewInputBlock(anonPostTextActionID,
 				ptxt("your message"),
 				ptxt("this message will be posted anonymously in #lgbtq-space"),
-				goslack.NewPlainTextInputBlockElement(nil, anonPostTextActionID).WithMultiline(true),
+				slack.NewPlainTextInputBlockElement(nil, anonPostTextActionID).WithMultiline(true),
 			),
 		}},
 	}
 }
 
-func (h *EventHandler) confirmationView(id int64, secret string) *goslack.ModalViewRequest {
-	return &goslack.ModalViewRequest{
-		Type:       goslack.VTModal,
+func (h *EventHandler) confirmationView(id int64, secret string) *slack.ModalViewRequest {
+	return &slack.ModalViewRequest{
+		Type:       slack.VTModal,
 		Title:      ptxt("anon post submitted"),
 		Close:      ptxt("Done"),
 		CallbackID: anonPostConfirmCallback,
-		Blocks: goslack.Blocks{BlockSet: []goslack.Block{
-			goslack.NewSectionBlock(
-				mdtxt(fmt.Sprintf("your anon post is *#%d*.\n\n_your anon reply key:_\n`%s`\n\nkeep it safe, you'll need it to reply anonymously from your post's thread.", id, secret)),
+		Blocks: slack.Blocks{BlockSet: []slack.Block{
+			slack.NewSectionBlock(
+				vmdtxt(fmt.Sprintf("your anon post is *#%d*.\n\n_your anon reply key:_\n`%s`\n\nkeep it safe, you'll need it to reply anonymously from your post's thread.", id, secret)),
 				nil, nil,
 			),
 		}},
 	}
 }
 
-func (h *EventHandler) reviewBlocks(id int64, text string) []goslack.Block {
-	return []goslack.Block{
-		goslack.NewSectionBlock(mdtxt(fmt.Sprintf("*anon post #%d:*\n%s", id, text)), nil, nil),
-		goslack.NewActionBlock("review_actions",
-			goslack.NewButtonBlockElement(acceptActionID, fmt.Sprint(id), ptxt("Accept")).WithStyle(goslack.StylePrimary),
-			goslack.NewButtonBlockElement(rejectActionID, fmt.Sprint(id), ptxt("Reject")).WithStyle(goslack.StyleDanger),
+func (h *EventHandler) reviewBlocks(id int64, text string) []slack.Block {
+	return []slack.Block{
+		slack.NewSectionBlock(mdtxt(fmt.Sprintf("*anon post #%d:*\n%s", id, text)), nil, nil),
+		slack.NewActionBlock("review_actions",
+			slack.NewButtonBlockElement(acceptActionID, fmt.Sprint(id), ptxt("Accept")).WithStyle(slack.StylePrimary),
+			slack.NewButtonBlockElement(rejectActionID, fmt.Sprint(id), ptxt("Reject")).WithStyle(slack.StyleDanger),
 		),
 	}
 }
 
-func respondView(w http.ResponseWriter, resp *goslack.ViewSubmissionResponse) {
+func respondView(w http.ResponseWriter, resp *slack.ViewSubmissionResponse) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		log.Printf("encoding view response: %v", err)
 	}
 }
 
-func ptxt(text string) *goslack.TextBlockObject {
-	return goslack.NewTextBlockObject(goslack.PlainTextType, text, false, false)
+func ptxt(text string) *slack.TextBlockObject {
+	return slack.NewTextBlockObject(slack.PlainTextType, text, true, false)
 }
 
-func mdtxt(text string) *goslack.TextBlockObject {
-	return goslack.NewTextBlockObject(goslack.MarkdownType, text, false, false)
+func mdtxt(text string) *slack.TextBlockObject {
+	return slack.NewTextBlockObject(slack.MarkdownType, text, true, false)
+}
+
+func vmdtxt(text string) *slack.TextBlockObject {
+	return slack.NewTextBlockObject(slack.MarkdownType, text, true, true)
 }
 
 func newSecret() (string, error) {
