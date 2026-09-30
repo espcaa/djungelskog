@@ -4,7 +4,7 @@
   },
   "display_information": {
     "name": "djungelskog",
-    "description": "anon bot for #lgbtq-space!",
+    "description": "anon bot",
     "background_color": "#835C3B"
   },
   "features": {
@@ -16,7 +16,7 @@
       {
         "command": "/djungelskog",
         "url": "https://djungelskog.hackclub.cc/events",
-        "description": "submit an anon message to #lgbtq-space",
+        "description": "submit an anon message",
         "usage_hint": "<message>"
       }
     ],

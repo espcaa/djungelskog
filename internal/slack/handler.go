@@ -26,14 +26,17 @@ const (
 	anonPostViewCallbackID  = "anon_post_view"
 	anonPostConfirmCallback = "anon_post_confirmation"
 	anonPostTextActionID    = "anon_post_text"
+	twViewCallbackID        = "tw_view"
+	twTextActionID          = "tw_text"
 
 	replyAnonShortcutID     = "reply_anon"
 	replyAnonViewCallbackID = "reply_anon_view"
 	replyAnonKeyActionID    = "reply_anon_key"
 	replyAnonTextActionID   = "reply_anon_text"
 
-	acceptActionID = "accept_confession"
-	rejectActionID = "reject_confession"
+	acceptActionID   = "accept_confession"
+	rejectActionID   = "reject_confession"
+	acceptTwActionID = "accept_confession_tw"
 
 	reviewedAtTimeFormat = "Jan 2, 2006 15:04"
 )
@@ -45,7 +48,8 @@ type Channels struct {
 }
 
 type Config struct {
-	Channels Channels
+	Channels    Channels
+	ChannelName string
 }
 
 type EventHandler struct {
@@ -145,6 +149,8 @@ func (h *EventHandler) handleViewSubmission(w http.ResponseWriter, ic slack.Inte
 		h.handleAnonPostSubmit(w, ic)
 	case replyAnonViewCallbackID:
 		h.handleAnonReplySubmit(w, ic)
+	case twViewCallbackID:
+		h.handleTwSubmit(w, ic)
 	default:
 		respondView(w, slack.NewClearViewSubmissionResponse())
 	}
@@ -164,7 +170,15 @@ func (h *EventHandler) handleBlockActions(w http.ResponseWriter, ic slack.Intera
 
 	switch a.ActionID {
 	case acceptActionID:
-		h.acceptConfession(w, ic, id)
+		h.acceptConfession(w, ic, id, false, "")
+	case acceptTwActionID:
+		view := h.newTwView()
+		view.PrivateMetadata = fmt.Sprint(id)
+		if _, err := h.client.OpenView(ic.TriggerID, view); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
 	case rejectActionID:
 		h.rejectConfession(w, ic, id)
 	default:
@@ -241,7 +255,26 @@ func (h *EventHandler) handleAnonPostSubmit(w http.ResponseWriter, ic slack.Inte
 	respondView(w, slack.NewUpdateViewSubmissionResponse(h.confirmationView(conf.ID, secret)))
 }
 
-func (h *EventHandler) acceptConfession(w http.ResponseWriter, ic slack.InteractionCallback, id int64) {
+func (h *EventHandler) handleTwSubmit(w http.ResponseWriter, ic slack.InteractionCallback) {
+	text := strings.TrimSpace(ic.View.State.Values[twTextActionID][twTextActionID].Value)
+	if text == "" {
+		respondView(w, slack.NewErrorsViewSubmissionResponse(map[string]string{
+			twTextActionID: "your TW can't be empty",
+		}))
+		return
+	}
+
+	id, err := strconv.ParseInt(ic.View.PrivateMetadata, 10, 64)
+	if err != nil {
+		log.Printf("parsing confession id from private metadata: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	h.acceptConfession(w, ic, id, true, text)
+}
+
+func (h *EventHandler) acceptConfession(w http.ResponseWriter, ic slack.InteractionCallback, id int64, tw bool, twText string) {
 	ctx := context.Background()
 	log.Printf("accepting confession %d by user=%s", id, ic.User.ID)
 	conf, err := h.queries.GetConfessionByID(ctx, id)
@@ -252,11 +285,28 @@ func (h *EventHandler) acceptConfession(w http.ResponseWriter, ic slack.Interact
 	}
 	log.Printf("confession %d: text=%q post_channel=%q review_ts=%v status=%q", conf.ID, conf.Text, conf.PostChannel, conf.ReviewTs, conf.Status)
 
-	_, ts, err := h.client.PostMessage(conf.PostChannel, slack.MsgOptionText(fmt.Sprintf("*%d*: %s", conf.ID, conf.Text), false))
-	if err != nil {
-		log.Printf("posting accepted confession %d: %v", id, err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
+	var ts string
+
+	if !tw {
+		_, ts, err = h.client.PostMessage(conf.PostChannel, slack.MsgOptionText(fmt.Sprintf("*%d*: %s", conf.ID, conf.Text), false))
+		if err != nil {
+			log.Printf("posting accepted confession %d: %v", id, err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+	} else {
+		_, ts, err = h.client.PostMessage(conf.PostChannel, slack.MsgOptionText(fmt.Sprintf("*%d*: TW: %s", conf.ID, twText), false))
+		if err != nil {
+			log.Printf("posting accepted confession %d with TW: %v", id, err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		_, _, err = h.client.PostMessage(conf.PostChannel, slack.MsgOptionTS(ts), slack.MsgOptionText(fmt.Sprintf("%s", conf.Text), false))
+		if err != nil {
+			log.Printf("posting confession %d as thread reply: %v", id, err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 	}
 	log.Printf("confession %d posted to %q ts=%q", conf.ID, conf.PostChannel, ts)
 	if _, err := h.queries.AcceptConfession(ctx, db.AcceptConfessionParams{
@@ -408,8 +458,25 @@ func (h *EventHandler) newAnonPostView() slack.ModalViewRequest {
 		Blocks: slack.Blocks{BlockSet: []slack.Block{
 			slack.NewInputBlock(anonPostTextActionID,
 				ptxt("your message"),
-				ptxt("this message will be posted anonymously in #lgbtq-space"),
+				ptxt("this message will be posted anonymously in "+h.config.ChannelName),
 				slack.NewPlainTextInputBlockElement(nil, anonPostTextActionID).WithMultiline(true),
+			),
+		}},
+	}
+}
+
+func (h *EventHandler) newTwView() slack.ModalViewRequest {
+	return slack.ModalViewRequest{
+		Type:       slack.VTModal,
+		Title:      ptxt("TW"),
+		Close:      ptxt("Cancel"),
+		Submit:     ptxt("Approve"),
+		CallbackID: twViewCallbackID,
+		Blocks: slack.Blocks{BlockSet: []slack.Block{
+			slack.NewInputBlock(twTextActionID,
+				ptxt("tw"),
+				ptxt("this confession will be approved and this tw will be added:"),
+				slack.NewPlainTextInputBlockElement(nil, twTextActionID).WithMultiline(false),
 			),
 		}},
 	}
@@ -436,6 +503,7 @@ func (h *EventHandler) reviewBlocks(id int64, text string) []slack.Block {
 		slack.NewActionBlock("review_actions",
 			slack.NewButtonBlockElement(acceptActionID, fmt.Sprint(id), ptxt("Accept")).WithStyle(slack.StylePrimary),
 			slack.NewButtonBlockElement(rejectActionID, fmt.Sprint(id), ptxt("Reject")).WithStyle(slack.StyleDanger),
+			slack.NewButtonBlockElement(acceptTwActionID, fmt.Sprint(id), ptxt("Accept with TW")).WithStyle(slack.StylePrimary),
 		),
 	}
 }

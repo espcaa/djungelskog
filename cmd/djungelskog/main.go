@@ -54,6 +54,7 @@ func main() {
 	if postChannel == "" {
 		panic("POST_CHANNEL environment variable is not set")
 	}
+	channelName := os.Getenv("CHANNEL_NAME")
 
 	slackClient := slack.New(botToken)
 
@@ -63,6 +64,7 @@ func main() {
 			Review: reviewChannel,
 			Post:   postChannel,
 		},
+		ChannelName: channelName,
 	}
 	bot := bot.NewBot(slackClient, signingSecret, config, pool)
 	bot.Run()
